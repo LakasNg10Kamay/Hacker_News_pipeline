@@ -1,0 +1,7 @@
+.env
+data/*
+!data/.gitkeep
+__pycache__/
+.hn-secrets/
+*token*.txt
+.claude/settings.local.json
