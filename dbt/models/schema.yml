@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: silver_stories
+    description: Cleaned stories, one row per story per snapshot.
+    columns:
+      - name: story_snapshot_id
+        description: Unique key, story ID plus snapshot time.
+        data_tests: [unique, not_null]
+      - name: item_id
+        description: Hacker News story ID.
+        data_tests: [not_null]
+      - name: snapshot_ts
+        description: When the snapshot was taken (UTC).
+        data_tests: [not_null]
+      - name: domain
+        description: Website the story links to.
+        data_tests: [not_null]
+      - name: score
+        description: Points at snapshot time.
+        data_tests: [not_null]
+
+  - name: gold_story_latest
+    description: Latest version of each story, with best rank, peak score, and how many snapshots it appeared in.
+    columns:
+      - name: item_id
+        data_tests: [unique, not_null]
+      - name: peak_score
+        data_tests: [not_null]
+
+  - name: gold_domain_stats
+    description: Front-page stories, average peak score, and total comments per website.
+    columns:
+      - name: domain
+        data_tests: [unique, not_null]
+
+  - name: gold_posting_hour
+    description: Stories and average peak score by the hour they were posted (UTC).
+    columns:
+      - name: posted_hour_utc
+        data_tests: [unique, not_null]

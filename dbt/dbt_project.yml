@@ -1,0 +1,17 @@
+name: hn_pipeline
+version: "1.0.0"
+config-version: 2
+profile: hn_pipeline
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+models:
+  hn_pipeline:
+    silver:
+      +schema: silver
+      +materialized: table
+    gold:
+      +schema: gold
+      +materialized: table

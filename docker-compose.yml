@@ -39,6 +39,7 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8085:8085"        # NEW: dbt docs page
     env_file: .env
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -46,12 +47,17 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       HN_PG_DSN: "host=postgres port=5432 dbname=hn user=airflow password=airflow"
       HN_DATA_DIR: /opt/airflow/data
+      DBT_PG_HOST: postgres          # NEW
+      DBT_PG_USER: airflow           # NEW
+      DBT_PG_PASSWORD: airflow       # NEW
       DATABRICKS_TOKEN_FILE: /run/secrets/databricks_token
     secrets:
       - databricks_token
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./dbt:/opt/airflow/dbt       # NEW: lets Airflow see the dbt folder
       - ./data:/opt/airflow/data
+      - ./logs:/opt/airflow/logs
 
 volumes:
   pgdata:

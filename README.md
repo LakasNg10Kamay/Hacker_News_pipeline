@@ -1,16 +1,16 @@
 # Hacker News Data Pipeline
 
-Batch data pipeline that snapshots the Hacker News front page every 6 hours. Airflow loads raw data into PostgreSQL (bronze); DuckDB parses, cleans, and quality-checks it into silver/gold layers and exports Parquet; Databricks then uses PySpark to build Delta tables tracking story scores, ranks, and posting-time trends. Everything runs locally in Docker.
+Batch data pipeline that snapshots the Hacker News front page every 6 hours. Airflow loads raw data into PostgreSQL (bronze); dbt transforms and tests it into silver and gold schemas in Postgres; the silver layer is exported as Parquet, and Databricks then uses PySpark to build Delta tables tracking story scores, ranks, and posting-time trends. Everything runs locally in Docker.
 
-**Stack:** Python, Apache Airflow, PostgreSQL, DuckDB, Docker, Databricks Free Edition (PySpark + Delta Lake), pgAdmin
+**Stack:** Python, Apache Airflow, PostgreSQL, dbt, Docker, Databricks Free Edition (PySpark + Delta Lake), pgAdmin
 
 ## Why I built this
 
-I work as a database engineer with SQL Server, where I build ETL/ELT pipelines using a Bronze, Silver, and Gold structure. I built this project to apply the same approach with modern, open-source and cloud data tools: Apache Airflow for orchestration, DuckDB for transformation, and Databricks with PySpark and Delta Lake for the cloud layer.
+I work as a database engineer with SQL Server, where I build ETL/ELT pipelines using a Bronze, Silver, and Gold structure. I built this project to apply the same approach with modern, open-source and cloud data tools: Apache Airflow for orchestration, dbt for transformation and testing, and Databricks with PySpark and Delta Lake for the cloud layer.
 
 The goals were to:
 
-- **Get hands-on experience with tools used in data engineering roles**, especially Airflow, Spark, and Databricks, which I don't use at work.
+- **Get hands-on experience with tools used in data engineering roles**, especially Airflow, dbt, Spark, and Databricks, which I don't use at work.
 - **Build a complete, working pipeline end to end**, from a live API to cloud tables, including scheduling, data quality checks, and secure handling of secrets.
 - **Keep it free to run**, using Docker locally and Databricks Free Edition instead of paid cloud services.
 
@@ -24,8 +24,9 @@ flowchart LR
 
     subgraph local["Docker (local)"]
         AF{{"Apache Airflow<br/>runs every 6 hours"}}
-        PG[("PostgreSQL<br/>Bronze: raw JSON")]
-        DD[("DuckDB<br/>Silver + Gold")]
+        BR[("PostgreSQL<br/>Bronze: raw JSON")]
+        DBT["dbt<br/>models + tests"]
+        SG[("PostgreSQL<br/>Silver + Gold schemas")]
         PQ["Parquet file"]
     end
 
@@ -35,35 +36,37 @@ flowchart LR
         DELTA[("Delta tables<br/>Silver + Gold")]
     end
 
-    API -->|extract| PG
-    PG -->|transform + quality checks| DD
-    DD -->|export| PQ
+    API -->|extract| BR
+    BR --> DBT -->|build| SG
+    SG -->|export| PQ
     PQ -->|load via Files API| VOL
     VOL --> SPK --> DELTA
 
-    AF -.->|orchestrates| PG
-    AF -.-> DD
+    AF -.->|orchestrates| BR
+    AF -.-> DBT
+    AF -.-> PQ
     AF -.-> VOL
 ```
 
 | Layer | Where | Tables |
 |---|---|---|
-| Bronze | PostgreSQL | `raw_items` (raw API JSON, one row per story per snapshot) |
-| Silver | DuckDB, Databricks | `silver_stories` (parsed, cleaned, quality-checked) |
-| Gold | DuckDB, Databricks | `gold_story_latest`, `gold_domain_stats`, `gold_posting_hour` (Databricks only) |
+| Bronze | PostgreSQL `public` | `raw_items` (raw API JSON, one row per story per snapshot) |
+| Silver | PostgreSQL `silver` (dbt), Databricks | `silver_stories` (parsed, cleaned, tested) |
+| Gold | PostgreSQL `gold` (dbt), Databricks | `gold_story_latest`, `gold_domain_stats`, `gold_posting_hour` |
+
+Airflow DAG: `extract → dbt_build → export_parquet → load_to_databricks`
 
 ### What each part does
 
 - **Airflow** schedules and runs the three tasks in order, retrying failed tasks automatically.
 - **PostgreSQL (bronze)** stores every API response untouched as JSONB. Each run adds a new snapshot in a single transaction, and a primary key on `(item_id, snapshot_ts)` prevents duplicates.
-- **DuckDB (silver and gold)** is the transformation engine. It:
-  - reads the raw JSON straight from Postgres, with no export step;
-  - parses it into columns (title, URL, author, score, comment count, posting time);
-  - extracts each story's website from its URL (posts without a URL, such as Ask HN, are labeled `news.ycombinator.com`);
-  - drops non-story items and deleted or dead posts;
-  - runs data quality checks and fails the run if a snapshot is empty or has null IDs or scores;
-  - builds local gold tables in `data/hn.duckdb`;
-  - exports each run's silver data as a Parquet file for Databricks.
+- **dbt (silver and gold)** is the transformation layer. Its SQL models run inside Postgres and:
+  - parse the raw JSON into columns (title, URL, author, score, comment count, posting time);
+  - extract each story's website from its URL (posts without a URL, such as Ask HN, are labeled `news.ycombinator.com`);
+  - drop non-story items and deleted or dead posts;
+  - build the gold tables in a separate `gold` schema;
+  - run data tests (`unique`, `not_null`, and a custom test that the newest snapshot produced silver rows). If any test fails, the Airflow task fails.
+- **Export** reads the current snapshot from `silver.silver_stories` and writes it as a Parquet file (pyarrow) for Databricks.
 - **Databricks** receives the Parquet files in a Unity Catalog volume, and a PySpark notebook builds Delta tables for analysis.
 
 ## Results
@@ -94,18 +97,22 @@ You need Docker Desktop.
 
 ### Look at the local results
 
+Query the gold tables in pgAdmin (below), or from the terminal:
 ```
-docker compose exec airflow python
+docker compose exec postgres psql -U airflow -d hn -c "SELECT * FROM gold.gold_domain_stats LIMIT 15;"
 ```
-```python
-import duckdb
-con = duckdb.connect('/opt/airflow/data/hn.duckdb', read_only=True)
-con.sql('SELECT * FROM gold_domain_stats LIMIT 15').show()
+
+### dbt documentation and lineage
+
+Generate the docs and open them at http://localhost:8085:
 ```
+docker compose exec airflow bash -c "cd /opt/airflow/dbt && /opt/airflow/dbt_venv/bin/dbt docs generate --profiles-dir . && cd target && python -m http.server 8085"
+```
+Press **Ctrl + C** to stop the docs server. The lineage graph shows how `raw_items` flows into the silver and gold models.
 
 ### Browse Postgres with pgAdmin
 
-Open http://localhost:8082 and log in with `PGADMIN_EMAIL` from `.env` and the password from your pgAdmin secret file. Register a server with Host `postgres`, Port `5432`, Username `airflow`, Password `airflow`, then open **Databases → hn → Schemas → public → Tables → raw_items**.
+Open http://localhost:8082 and log in with `PGADMIN_EMAIL` from `.env` and the password from your pgAdmin secret file. Register a server with Host `postgres`, Port `5432`, Username `airflow`, Password `airflow`, then open **Databases → hn → Schemas**: `public` holds bronze (`raw_items`), and `silver` and `gold` hold the dbt models.
 
 Postgres is also reachable from your machine on port **5433** (same user and password), for example with DBeaver.
 
@@ -129,7 +136,6 @@ No passwords or tokens are stored in `.env` or anywhere in the project folder.
 | pgAdmin password | `%USERPROFILE%\.hn-secrets\pgadmin_password.txt` | `/run/secrets/pgadmin_password` |
 
 - Docker Compose mounts these files as read-only secrets, so they never appear as environment variables or in Git.
-- A local Claude Code settings file (`.claude/settings.local.json`, not committed) denies Claude Code's file tools access to `.env` and `~/.hn-secrets/`.
 - Airflow, Postgres, and pgAdmin only listen on `127.0.0.1`, so other devices on your network can't reach them.
 - The Databricks token is least-privilege (files scope only) and short-lived; revoke it in Databricks if it ever leaks.
 
@@ -147,13 +153,15 @@ The Postgres password itself is the default `airflow`. That is acceptable becaus
 ## Data quality checks
 
 - **Extract** fails the run if the API returns nothing, and inserts everything in one transaction (no partial loads).
-- **Transform** fails the run if a snapshot produces no silver rows or has null IDs or scores.
+- **dbt tests** fail the run if keys are missing or duplicated, or if the newest snapshot produced no silver rows.
+- **Export** fails the run if there are no silver rows for the snapshot.
 - **The notebook** asserts there is data and no null keys before writing Delta tables.
 
 ## Design choices
 
 - **Snapshots, not overwrites:** each run keeps a new copy of every story, so you can see how score and rank change over time.
 - **Postgres as bronze:** raw JSON is kept untouched (JSONB), so silver can be rebuilt any time, even for snapshots the API can no longer return.
-- **DuckDB for transforms:** reads raw JSON straight from Postgres, parses and cleans it into silver and gold layers, runs data quality checks, and exports Parquet for Databricks. It runs inside Python with no server, transforms each snapshot in under a second, and keeps only clean, compact files going to the cloud. Gold tables are built in both DuckDB (SQL, local) and Databricks (PySpark, cloud) to show the same logic on both platforms.
+- **dbt on Postgres for transforms:** each layer is a version-controlled SQL model with tests and documentation, and all three layers live in one database, which keeps the setup simple and easy to inspect. Gold tables are built in both dbt (SQL) and Databricks (PySpark) to show the same logic on both platforms.
+- **dbt in its own virtual environment:** keeps dbt's dependencies from clashing with Airflow's inside the same Docker image.
 - **Databricks for the cloud layer:** Delta tables and PySpark at zero cost on Free Edition.
 - **Logs on disk:** Airflow task logs are saved to `logs/` so they survive container restarts (ignored by Git).

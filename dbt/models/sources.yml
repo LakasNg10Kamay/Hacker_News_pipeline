@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: Raw Hacker News API responses loaded by the Airflow extract task.
+    schema: public
+    tables:
+      - name: raw_items
+        description: One row per story per 6-hour snapshot, with the API response kept untouched as JSONB.
+        columns:
+          - name: item_id
+            data_tests: [not_null]
+          - name: snapshot_ts
+            data_tests: [not_null]

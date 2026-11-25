@@ -1,0 +1,13 @@
+# Connection settings for dbt. Values come from environment variables set in docker-compose.yml.
+hn_pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_PG_HOST', 'postgres') }}"
+      port: 5432
+      user: "{{ env_var('DBT_PG_USER', 'airflow') }}"
+      password: "{{ env_var('DBT_PG_PASSWORD', 'airflow') }}"
+      dbname: hn
+      schema: public
+      threads: 2
